@@ -68,8 +68,36 @@ HudiJniReader::HudiJniReader(const TFileScanRangeParams& scan_params,
         params[HADOOP_FS_PREFIX + kv.first] = kv.second;
     }
 
-    _jni_connector = std::make_unique<JniConnector>("org/apache/doris/hudi/HudiJniScanner", params,
-                                                    required_fields);
+    jclass scanner_loader_class = _jni_env->FindClass("org/apache/doris/hudi/HudiScannerLoader");
+    jmethodID scanner_loader_constructor = _jni_env->GetMethodID(scanner_loader_class, "<init>", "()V");
+    jobject scanner_loader_obj = _jni_env->NewObject(scanner_loader_class, scanner_loader_constructor);
+    jmethodID get_loader_method =
+            _jni_env->GetMethodID(scanner_loader_class, "getLoaderClass", "()Ljava/lang/Class;");
+    _jni_scanner_cls = (jclass)_jni_env->CallObjectMethod(scanner_loader_obj, get_loader_method);
+
+    _jni_env->DeleteLocalRef(scanner_loader_class);
+    _jni_env->DeleteLocalRef(scanner_loader_obj);
+
+    jmethodID scanner_constructor = _jni_env->GetMethodID(_jni_scanner_cls, "<init>", "(ILjava/util/Map;)V");
+
+    jclass hashmap_class = _jni_env->FindClass("java/util/HashMap");
+    jmethodID hashmap_constructor = _jni_env->GetMethodID(hashmap_class, "<init>", "(I)V");
+    jobject hashmap_object = _jni_env->NewObject(hashmap_class, hashmap_constructor, params.size());
+    jmethodID hashmap_put =
+            _jni_env->GetMethodID(hashmap_class, "put", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+
+    for (const auto& it : params) {
+        jstring key = _jni_env->NewStringUTF(it.first.c_str());
+        jstring value = _jni_env->NewStringUTF(it.second.c_str());
+
+        _jni_env->CallObjectMethod(hashmap_object, hashmap_put, key, value);
+        _jni_env->DeleteLocalRef(key);
+        _jni_env->DeleteLocalRef(value);
+    }
+    _jni_env->DeleteLocalRef(hashmap_class);
+
+    _jni_connector = _jni_env->NewObject(_jni_scanner_cls, scanner_constructor, hashmap_object);
+    _jni_env->DeleteLocalRef(hashmap_object);
 }
 
 Status HudiJniReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
